@@ -1,267 +1,501 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
-import datetime
+from tkinter import messagebox, ttk
+
 from models.Modelo import ModeloInventario
+from views.tema import (
+    ACENTO,
+    ACENTO_OSCURO,
+    BORDE,
+    FONDO,
+    PANEL,
+    PANEL_SECUNDARIO,
+    ROJO,
+    TEXTO,
+    TEXTO_SUAVE,
+    configurar_estilos,
+    crear_boton,
+    crear_etiqueta,
+    crear_tarjeta,
+)
 
-class VentanaPOS:
-    def __init__(self, root, usuario_actual="Néstor López"):
-        self.root = root
-        self.root.title("POS-Kontrol - Punto de Venta")
-        self.root.geometry("1280x720")
-        self.root.configure(bg="#0B0F12")
-        
+
+def formato_pesos(valor):
+    # Dejo todos los precios con el mismo formato en pantalla.
+    return f"$ {valor:,.0f}".replace(",", ".")
+
+
+class VentanaPOS(tk.Frame):
+    def __init__(self, parent, usuario_actual, al_guardar=None):
+        # Preparo el carrito, el método de pago y los productos para vender.
+        super().__init__(parent, bg=FONDO)
+        configurar_estilos(self.winfo_toplevel())
         self.usuario_actual = usuario_actual
-        self.modelo_inv = ModeloInventario()
-        self.modelo_inv.cargar_datos_prueba()
-        
-        self.carrito = []
-        self.total_pagar = 0.0
+        self.modelo = ModeloInventario()
+        self.modelo.cargar_datos_prueba()
+        self.al_guardar = al_guardar
+        self.carrito = {}
+        self.total_pagar = 0
+        self.metodo_pago = tk.StringVar(value="Efectivo")
+        self.resultados_actuales = []
 
-        self.crear_header()
-        self.crear_cuerpo()
-        self.crear_footer()
-        self.actualizar_reloj()
+        self._crear_interfaz()
+        self._actualizar_carrito()
+        self.winfo_toplevel().bind("<F12>", self._atajo_procesar)
 
-    def crear_header(self):
-        header_frame = tk.Frame(self.root, bg="#161B22", height=60)
-        header_frame.pack(fill="x", side="top")
-        
-        lbl_logo = tk.Label(header_frame, text="❖ POS-Kontrol", font=("Arial", 16, "bold"), fg="#00E599", bg="#161B22")
-        lbl_logo.pack(side="left", padx=20, pady=15)
-        
-        lbl_sede = tk.Label(header_frame, text="🏪 La Cumbre (Caja 01 - Turno Abierto)", font=("Arial", 10), fg="#8A99AD", bg="#161B22")
-        lbl_sede.pack(side="left", padx=10)
+    def _crear_interfaz(self):
+        # Separo la búsqueda y el carrito de la sección para cobrar.
+        titulo = tk.Frame(self, bg=FONDO)
+        titulo.pack(fill="x", pady=(0, 14))
+        crear_etiqueta(
+            titulo, "Nueva venta", bg=FONDO, tamano=20, negrita=True
+        ).pack(side="left")
+        crear_etiqueta(
+            titulo,
+            f"Venta #{self.modelo.obtener_reporte_dia()['cantidad'] + 1:05d}  ·  En curso",
+            bg=FONDO,
+            color=TEXTO_SUAVE,
+            tamano=9,
+        ).pack(side="left", padx=16, pady=(7, 0))
 
-        btn_salir = tk.Button(header_frame, text="🚪 Salir", font=("Arial", 10, "bold"), bg="#1E242B", fg="#FFFFFF", relief="flat", cursor="hand2", command=self.root.quit)
-        btn_salir.pack(side="right", padx=20)
+        cuerpo = tk.Frame(self, bg=FONDO)
+        cuerpo.pack(fill="both", expand=True)
+        cuerpo.grid_columnconfigure(0, weight=7, uniform="pos")
+        cuerpo.grid_columnconfigure(1, weight=4, uniform="pos")
+        cuerpo.grid_rowconfigure(1, weight=1)
 
-        lbl_usuario = tk.Label(header_frame, text=f"👤 {self.usuario_actual} (Cajero)", font=("Arial", 10, "bold"), fg="#FFFFFF", bg="#161B22")
-        lbl_usuario.pack(side="right", padx=15)
+        busqueda = crear_tarjeta(cuerpo, padx=16, pady=14)
+        busqueda.grid(row=0, column=0, sticky="ew", padx=(0, 12), pady=(0, 12))
+        crear_etiqueta(
+            busqueda,
+            "Escanea el código de barras o busca un producto",
+            color=TEXTO_SUAVE,
+            tamano=9,
+        ).pack(anchor="w", pady=(0, 8))
 
-        self.lbl_reloj = tk.Label(header_frame, text="", font=("Arial", 10), fg="#00E599", bg="#161B22")
-        self.lbl_reloj.pack(side="right", padx=15)
+        fila_busqueda = tk.Frame(busqueda, bg=PANEL)
+        fila_busqueda.pack(fill="x")
+        self.entry_busqueda = tk.Entry(
+            fila_busqueda,
+            bg=PANEL_SECUNDARIO,
+            fg=TEXTO,
+            insertbackground=ACENTO,
+            relief="flat",
+            font=("Segoe UI", 11),
+        )
+        self.entry_busqueda.pack(side="left", fill="x", expand=True, ipady=9)
+        self.entry_busqueda.bind("<KeyRelease>", self._actualizar_sugerencias)
+        self.entry_busqueda.bind("<Return>", self._agregar_primer_resultado)
+        crear_boton(
+            fila_busqueda,
+            "Agregar",
+            self._agregar_primer_resultado,
+            principal=True,
+        ).pack(side="left", padx=(10, 0))
 
-    def crear_cuerpo(self):
-        cuerpo_frame = tk.Frame(self.root, bg="#0B0F12")
-        cuerpo_frame.pack(fill="both", expand=True, padx=20, pady=15)
+        self.lista_sugerencias = tk.Listbox(
+            busqueda,
+            height=4,
+            bg=PANEL_SECUNDARIO,
+            fg=TEXTO,
+            selectbackground=ACENTO_OSCURO,
+            selectforeground=TEXTO,
+            relief="flat",
+            highlightthickness=0,
+            font=("Segoe UI", 9),
+        )
+        self.lista_sugerencias.bind(
+            "<Double-Button-1>", self._agregar_seleccionado
+        )
+        self.lista_sugerencias.bind(
+            "<Return>", self._agregar_seleccionado
+        )
 
-        # PANEL IZQUIERDO: BUSCADOR Y CARRITO
-        panel_izq = tk.Frame(cuerpo_frame, bg="#0B0F12")
-        panel_izq.pack(side="left", fill="both", expand=True, padx=(0, 10))
-
-        # Buscador y contenedor de autocompletado
-        frame_busqueda = tk.Frame(panel_izq, bg="#161B22", padx=15, pady=10)
-        frame_busqueda.pack(fill="x", pady=(0, 10))
-
-        lbl_buscar = tk.Label(frame_busqueda, text="🔍 Escribe el nombre o código del producto:", font=("Arial", 10), fg="#8A99AD", bg="#161B22")
-        lbl_buscar.pack(anchor="w")
-
-        entry_container = tk.Frame(frame_busqueda, bg="#161B22")
-        entry_container.pack(fill="x", pady=(5, 0))
-
-        self.entry_busqueda = tk.Entry(entry_container, font=("Arial", 12), bg="#0B0F12", fg="#FFFFFF", insertbackground="white", relief="flat")
-        self.entry_busqueda.pack(fill="x", ipady=6)
-        self.entry_busqueda.bind("<KeyRelease>", self.actualizar_sugerencias)
-        self.entry_busqueda.bind("<Return>", self.seleccionar_primer_resultado)
-
-        # Lista desplegable de sugerencias
-        self.lista_sugerencias = tk.Listbox(frame_busqueda, font=("Arial", 11), bg="#1E242B", fg="#FFFFFF", selectbackground="#00E599", selectforeground="#0B0F12", relief="flat", height=4)
-        self.lista_sugerencias.bind("<<ListboxSelect>>", self.seleccionar_desde_lista)
-
-        # Tabla del Carrito de Compras
-        frame_tabla = tk.Frame(panel_izq, bg="#161B22", padx=10, pady=10)
-        frame_tabla.pack(fill="both", expand=True)
-
-        lbl_carrito_titulo = tk.Label(frame_tabla, text="🛒 Carrito Actual", font=("Arial", 12, "bold"), fg="#FFFFFF", bg="#161B22")
-        lbl_carrito_titulo.pack(anchor="w", pady=(0, 10))
-
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("Treeview", background="#0B0F12", foreground="#FFFFFF", fieldbackground="#0B0F12", rowheight=30)
-        style.configure("Treeview.Heading", background="#1E242B", foreground="#00E599", font=("Arial", 10, "bold"))
-        style.map("Treeview", background=[("selected", "#00E599")], foreground=[("selected", "#0B0F12")])
+        carrito = crear_tarjeta(cuerpo, padx=14, pady=14)
+        carrito.grid(
+            row=1, column=0, sticky="nsew", padx=(0, 12), pady=(0, 12)
+        )
+        barra_carrito = tk.Frame(carrito, bg=PANEL)
+        barra_carrito.pack(fill="x", pady=(0, 10))
+        crear_etiqueta(
+            barra_carrito, "Carrito actual", tamano=12, negrita=True
+        ).pack(side="left")
+        self.lbl_conteo = crear_etiqueta(
+            barra_carrito, "0 artículos", color=TEXTO_SUAVE, tamano=9
+        )
+        self.lbl_conteo.pack(side="left", padx=10)
+        crear_boton(
+            barra_carrito, "Vaciar carrito", self._vaciar_carrito, compacto=True
+        ).pack(side="right")
 
         columnas = ("codigo", "nombre", "cantidad", "precio", "subtotal")
-        self.tabla = ttk.Treeview(frame_tabla, columns=columnas, show="headings", style="Treeview")
-
-        self.tabla.heading("codigo", text="CÓDIGO")
-        self.tabla.heading("nombre", text="NOMBRE DEL PRODUCTO")
-        self.tabla.heading("cantidad", text="CANTIDAD")
-        self.tabla.heading("precio", text="PRECIO UNITARIO")
-        self.tabla.heading("subtotal", text="SUBTOTAL")
-
-        self.tabla.column("codigo", width=80, anchor="center")
-        self.tabla.column("nombre", width=280, anchor="w")
-        self.tabla.column("cantidad", width=80, anchor="center")
-        self.tabla.column("precio", width=110, anchor="e")
-        self.tabla.column("subtotal", width=110, anchor="e")
-
+        self.tabla = ttk.Treeview(
+            carrito,
+            columns=columnas,
+            show="headings",
+            style="POS.Treeview",
+            selectmode="browse",
+        )
+        encabezados = {
+            "codigo": ("CÓDIGO", 80, "center"),
+            "nombre": ("NOMBRE DEL PRODUCTO", 260, "w"),
+            "cantidad": ("CANTIDAD", 75, "center"),
+            "precio": ("PRECIO UNITARIO", 115, "e"),
+            "subtotal": ("SUBTOTAL", 115, "e"),
+        }
+        for columna, (texto, ancho, ancla) in encabezados.items():
+            self.tabla.heading(columna, text=texto)
+            self.tabla.column(columna, width=ancho, anchor=ancla)
         self.tabla.pack(fill="both", expand=True)
 
-        # PANEL DERECHO: DETALLE DE COBRO
-        panel_der = tk.Frame(cuerpo_frame, bg="#161B22", width=380, padx=20, pady=20)
-        panel_der.pack(side="right", fill="y")
-        panel_der.pack_propagate(False)
+        acciones = tk.Frame(carrito, bg=PANEL)
+        acciones.pack(fill="x", pady=(10, 0))
+        crear_boton(
+            acciones, "−  Quitar unidad", lambda: self._cambiar_cantidad(-1),
+            compacto=True,
+        ).pack(side="left")
+        crear_boton(
+            acciones, "+  Agregar unidad", lambda: self._cambiar_cantidad(1),
+            compacto=True,
+        ).pack(side="left", padx=8)
+        crear_boton(
+            acciones, "Eliminar producto", self._eliminar_seleccionado,
+            compacto=True,
+        ).pack(side="right")
 
-        lbl_total_titulo = tk.Label(panel_der, text="TOTAL A PAGAR", font=("Arial", 11, "bold"), fg="#8A99AD", bg="#161B22")
-        lbl_total_titulo.pack(anchor="w")
-
-        self.lbl_total_monto = tk.Label(panel_der, text="$ 0", font=("Arial", 30, "bold"), fg="#FFFFFF", bg="#161B22")
-        self.lbl_total_monto.pack(anchor="w", pady=(0, 15))
-
-        lbl_metodo = tk.Label(panel_der, text="Método de Pago", font=("Arial", 10, "bold"), fg="#FFFFFF", bg="#161B22")
-        lbl_metodo.pack(anchor="w", pady=(10, 5))
-
-        frame_metodos = tk.Frame(panel_der, bg="#161B22")
-        frame_metodos.pack(fill="x", pady=5)
-
-        self.btn_efectivo = tk.Button(frame_metodos, text="💵 Efectivo", font=("Arial", 9, "bold"), bg="#00E599", fg="#0B0F12", relief="flat", cursor="hand2")
-        self.btn_efectivo.pack(side="left", fill="x", expand=True, padx=2)
-
-        self.btn_qr = tk.Button(frame_metodos, text="📱 QR", font=("Arial", 9, "bold"), bg="#0B0F12", fg="#FFFFFF", relief="flat", cursor="hand2")
-        self.btn_qr.pack(side="left", fill="x", expand=True, padx=2)
-
-        self.btn_bold = tk.Button(frame_metodos, text="💳 Bold", font=("Arial", 9, "bold"), bg="#0B0F12", fg="#FFFFFF", relief="flat", cursor="hand2")
-        self.btn_bold.pack(side="left", fill="x", expand=True, padx=2)
-
-        lbl_recibido = tk.Label(panel_der, text="Efectivo Recibido ($ COP)", font=("Arial", 10, "bold"), fg="#FFFFFF", bg="#161B22")
-        lbl_recibido.pack(anchor="w", pady=(20, 5))
-
-        self.entry_recibido = tk.Entry(panel_der, font=("Arial", 16, "bold"), bg="#0B0F12", fg="#00E599", insertbackground="white", relief="flat", justify="right")
-        self.entry_recibido.pack(fill="x", ipady=8)
-        self.entry_recibido.bind("<KeyRelease>", self.calcular_cambio)
-
-        frame_cambio = tk.Frame(panel_der, bg="#0B0F12", padx=15, pady=10)
-        frame_cambio.pack(fill="x", pady=15)
-
-        lbl_cambio_tit = tk.Label(frame_cambio, text="Cambio / Devuelta", font=("Arial", 9), fg="#8A99AD", bg="#0B0F12")
-        lbl_cambio_tit.pack(anchor="w")
-
-        self.lbl_cambio_monto = tk.Label(frame_cambio, text="$ 0", font=("Arial", 18, "bold"), fg="#00E599", bg="#0B0F12")
-        self.lbl_cambio_monto.pack(anchor="w")
-
-        btn_procesar = tk.Button(
-            panel_der, text="✔ PROCESAR VENTA (F12)", font=("Arial", 12, "bold"),
-            bg="#00E599", fg="#0B0F12", activebackground="#00B377", relief="flat",
-            cursor="hand2", command=self.procesar_venta
+        cobro = crear_tarjeta(cuerpo, padx=18, pady=18)
+        cobro.grid(row=0, column=1, rowspan=2, sticky="nsew", pady=(0, 12))
+        crear_etiqueta(
+            cobro, "TOTAL A PAGAR", color=TEXTO_SUAVE, tamano=9, negrita=True
+        ).pack(anchor="w")
+        self.lbl_total = crear_etiqueta(
+            cobro, formato_pesos(0), tamano=30, negrita=True
         )
-        btn_procesar.pack(fill="x", ipady=12, side="bottom")
+        self.lbl_total.pack(anchor="w", pady=(4, 12))
+        crear_etiqueta(
+            cobro, "Impuestos aplicables incluidos", color=TEXTO_SUAVE, tamano=8
+        ).pack(anchor="w")
 
-    def crear_footer(self):
-        footer_frame = tk.Frame(self.root, bg="#161B22", height=30)
-        footer_frame.pack(fill="x", side="bottom")
+        tk.Frame(cobro, bg=BORDE, height=1).pack(fill="x", pady=16)
+        crear_etiqueta(
+            cobro, "Método de pago", tamano=10, negrita=True
+        ).pack(anchor="w", pady=(0, 10))
+        fila_metodos = tk.Frame(cobro, bg=PANEL)
+        fila_metodos.pack(fill="x")
+        self.botones_pago = {}
+        for metodo, etiqueta in (
+            ("Efectivo", "Efectivo"),
+            ("QR", "QR"),
+            ("Bold", "Datáfono Bold"),
+        ):
+            boton = tk.Radiobutton(
+                fila_metodos,
+                text=etiqueta,
+                variable=self.metodo_pago,
+                value=metodo,
+                command=self._actualizar_pago,
+                indicatoron=False,
+                bg=PANEL_SECUNDARIO,
+                fg=TEXTO,
+                selectcolor=ACENTO_OSCURO,
+                activebackground=ACENTO_OSCURO,
+                activeforeground=TEXTO,
+                relief="flat",
+                padx=8,
+                pady=12,
+                font=("Segoe UI", 8, "bold"),
+            )
+            boton.pack(side="left", fill="x", expand=True, padx=(0, 6))
+            self.botones_pago[metodo] = boton
 
-        lbl_estado = tk.Label(footer_frame, text="🟢 Búsqueda inteligente activada | Terminal 01", font=("Arial", 8), fg="#00E599", bg="#161B22")
-        lbl_estado.pack(side="left", padx=15, pady=5)
+        self.lbl_recibido = crear_etiqueta(
+            cobro, "Efectivo recibido (COP)", tamano=9, negrita=True
+        )
+        self.lbl_recibido.pack(anchor="w", pady=(18, 7))
+        self.entry_recibido = tk.Entry(
+            cobro,
+            bg=PANEL_SECUNDARIO,
+            fg=TEXTO,
+            insertbackground=ACENTO,
+            relief="flat",
+            justify="right",
+            font=("Segoe UI", 14, "bold"),
+        )
+        self.entry_recibido.pack(fill="x", ipady=8)
+        self.entry_recibido.bind("<KeyRelease>", self._calcular_cambio)
 
-        lbl_atajos = tk.Label(footer_frame, text="[Flechas/Click] Seleccionar Producto  |  [F12] Procesar Venta", font=("Arial", 8), fg="#8A99AD", bg="#161B22")
-        lbl_atajos.pack(side="right", padx=15, pady=5)
+        panel_cambio = tk.Frame(cobro, bg=ACENTO_OSCURO, padx=12, pady=12)
+        panel_cambio.pack(fill="x", pady=14)
+        crear_etiqueta(
+            panel_cambio, "Cambio / Devuelta", bg=ACENTO_OSCURO,
+            color=TEXTO_SUAVE, tamano=9,
+        ).pack(anchor="w")
+        self.lbl_cambio = crear_etiqueta(
+            panel_cambio, formato_pesos(0), bg=ACENTO_OSCURO,
+            color=ACENTO, tamano=19, negrita=True,
+        )
+        self.lbl_cambio.pack(anchor="w", pady=(3, 0))
 
-    def actualizar_reloj(self):
-        ahora = datetime.datetime.now().strftime("%I:%M:%S %p | %d %b %Y")
-        self.lbl_reloj.config(text=ahora)
-        self.root.after(1000, self.actualizar_reloj)
+        self.lbl_estado_pago = crear_etiqueta(
+            cobro, "Ingresa el efectivo recibido para continuar",
+            color=TEXTO_SUAVE, tamano=8, wraplength=310, justify="left",
+        )
+        self.lbl_estado_pago.pack(anchor="w", pady=(4, 10))
+        crear_boton(
+            cobro,
+            "✓  PROCESAR VENTA  (F12)",
+            self.procesar_venta,
+            principal=True,
+        ).pack(fill="x", ipady=5, side="bottom")
 
-    def actualizar_sugerencias(self, event):
+    def _actualizar_sugerencias(self, _event=None):
+        # Muestro coincidencias que tengan existencias disponibles.
         texto = self.entry_busqueda.get().strip()
         self.lista_sugerencias.delete(0, tk.END)
-
+        self.resultados_actuales = []
         if not texto:
             self.lista_sugerencias.pack_forget()
             return
 
-        resultados = self.modelo_inv.buscar_productos(texto)
-        if resultados:
-            for prod in resultados:
-                display_text = f"[{prod['id']}] {prod['nombre']} - $ {prod['precio_venta']:,.0f} (Stock: {prod['stock']})"
-                self.lista_sugerencias.insert(tk.END, display_text)
-            
-            self.resultados_actuales = resultados
-            self.lista_sugerencias.pack(fill="x", pady=(2, 0))
+        self.resultados_actuales = [
+            producto
+            for producto in self.modelo.obtener_productos(termino=texto)
+            if producto["activo"] and producto["stock"] > 0
+        ]
+        for producto in self.resultados_actuales:
+            self.lista_sugerencias.insert(
+                tk.END,
+                f"PRD-{producto['id']:04d}  ·  {producto['nombre']}  ·  "
+                f"{formato_pesos(producto['precio_venta'])}  ·  "
+                f"{producto['stock']} disponibles",
+            )
+        if self.resultados_actuales:
+            self.lista_sugerencias.pack(fill="x", pady=(8, 0))
         else:
             self.lista_sugerencias.pack_forget()
 
-    def seleccionar_desde_lista(self, event):
+    def _agregar_primer_resultado(self, _event=None):
+        # Agrego la primera coincidencia, útil al escanear un código.
+        if not self.resultados_actuales:
+            self._actualizar_sugerencias()
+        if self.resultados_actuales:
+            self._agregar_producto(self.resultados_actuales[0])
+        return "break"
+
+    def _agregar_seleccionado(self, _event=None):
+        # Agrego el producto que se eligió en la lista de resultados.
         seleccion = self.lista_sugerencias.curselection()
-        if not seleccion:
+        if seleccion:
+            self._agregar_producto(self.resultados_actuales[seleccion[0]])
+        return "break"
+
+    def _agregar_producto(self, producto):
+        # No dejo que el carrito supere las existencias del producto.
+        producto_id = producto["id"]
+        actual = self.carrito.get(producto_id, {}).get("cantidad", 0)
+        if actual >= producto["stock"]:
+            messagebox.showwarning(
+                "Stock insuficiente",
+                f"No hay más unidades disponibles de {producto['nombre']}.",
+                parent=self.winfo_toplevel(),
+            )
             return
-        
-        index = seleccion[0]
-        prod = self.resultados_actuales[index]
-        self.agregar_al_carrito(prod)
-
-    def seleccionar_primer_resultado(self, event):
-        if hasattr(self, 'resultados_actuales') and self.resultados_actuales:
-            self.agregar_al_carrito(self.resultados_actuales[0])
-
-    def agregar_al_carrito(self, prod):
-        id_p, nombre, precio, stock = prod['id'], prod['nombre'], prod['precio_venta'], prod['stock']
-
-        if stock <= 0:
-            messagebox.showerror("Stock Agotado", f"El producto '{nombre}' no tiene existencias disponibles.")
-            return
-
-        encontrado = False
-        for item in self.carrito:
-            if item['id'] == id_p:
-                item['cantidad'] += 1
-                item['subtotal'] = item['cantidad'] * item['precio']
-                encontrado = True
-                break
-
-        if not encontrado:
-            self.carrito.append({
-                'id': id_p,
-                'nombre': nombre,
-                'cantidad': 1,
-                'precio': precio,
-                'subtotal': precio
-            })
-
+        if producto_id in self.carrito:
+            self.carrito[producto_id]["cantidad"] += 1
+        else:
+            self.carrito[producto_id] = {
+                "id": producto_id,
+                "nombre": producto["nombre"],
+                "precio": producto["precio_venta"],
+                "cantidad": 1,
+                "stock": producto["stock"],
+            }
         self.entry_busqueda.delete(0, tk.END)
         self.lista_sugerencias.pack_forget()
-        self.actualizar_tabla_y_totales()
+        self._actualizar_carrito()
+        self.entry_busqueda.focus_set()
 
-    def actualizar_tabla_y_totales(self):
-        for row in self.tabla.get_children():
-            self.tabla.delete(row)
+    def _producto_seleccionado(self):
+        # Devuelvo el código del producto resaltado en la tabla del carrito.
+        seleccion = self.tabla.selection()
+        return int(seleccion[0]) if seleccion else None
 
-        self.total_pagar = 0.0
-        for item in self.carrito:
-            self.tabla.insert("", "end", values=(
-                f"PRD-{item['id']:03d}",
-                item['nombre'],
-                item['cantidad'],
-                f"$ {item['precio']:,.0f}",
-                f"$ {item['subtotal']:,.0f}"
-            ))
-            self.total_pagar += item['subtotal']
-
-        self.lbl_total_monto.config(text=f"$ {self.total_pagar:,.0f}")
-        self.calcular_cambio()
-
-    def calcular_cambio(self, event=None):
-        recibido_str = self.entry_recibido.get().strip()
-        if not recibido_str:
-            self.lbl_cambio_monto.config(text="$ 0")
+    def _cambiar_cantidad(self, delta):
+        # Ajusto la cantidad del producto seleccionado si hay stock suficiente.
+        producto_id = self._producto_seleccionado()
+        if producto_id is None:
             return
+        item = self.carrito[producto_id]
+        nueva_cantidad = item["cantidad"] + delta
+        if nueva_cantidad <= 0:
+            del self.carrito[producto_id]
+        elif nueva_cantidad <= item["stock"]:
+            item["cantidad"] = nueva_cantidad
+        else:
+            messagebox.showwarning(
+                "Stock insuficiente",
+                "La cantidad supera las existencias disponibles.",
+                parent=self.winfo_toplevel(),
+            )
+        self._actualizar_carrito()
 
+    def _eliminar_seleccionado(self):
+        # Quito del carrito el producto seleccionado.
+        producto_id = self._producto_seleccionado()
+        if producto_id is not None:
+            del self.carrito[producto_id]
+            self._actualizar_carrito()
+
+    def _vaciar_carrito(self):
+        # Dejo el carrito vacío y actualizo los valores que se ven en pantalla.
+        self.carrito.clear()
+        self._actualizar_carrito()
+
+    def _actualizar_carrito(self):
+        # Vuelvo a dibujar los artículos y calculo el total que se va a cobrar.
+        for item_id in self.tabla.get_children():
+            self.tabla.delete(item_id)
+        total_unidades = 0
+        self.total_pagar = 0
+        for producto_id, item in self.carrito.items():
+            subtotal = item["precio"] * item["cantidad"]
+            total_unidades += item["cantidad"]
+            self.total_pagar += subtotal
+            self.tabla.insert(
+                "",
+                "end",
+                iid=str(producto_id),
+                values=(
+                    f"PRD-{producto_id:04d}",
+                    item["nombre"],
+                    item["cantidad"],
+                    formato_pesos(item["precio"]),
+                    formato_pesos(subtotal),
+                ),
+            )
+        self.lbl_conteo.config(text=f"{total_unidades} artículos")
+        self.lbl_total.config(text=formato_pesos(self.total_pagar))
+        self._actualizar_pago()
+
+    def _monto_recibido(self):
+        # Leo el efectivo ingresado; si no es un número, lo dejo sin valor.
+        texto = self.entry_recibido.get().strip()
+        if not texto:
+            return None
         try:
-            recibido = float(recibido_str)
-            cambio = recibido - self.total_pagar
-            if cambio >= 0:
-                self.lbl_cambio_monto.config(text=f"$ {cambio:,.0f}", fg="#00E599")
-            else:
-                self.lbl_cambio_monto.config(text="Falta dinero", fg="#FF5555")
+            return float(
+                texto.replace("$", "").replace(".", "").replace(",", "").strip()
+            )
         except ValueError:
-            self.lbl_cambio_monto.config(text="Monto inválido", fg="#FF5555")
+            return None
+
+    def _actualizar_pago(self):
+        # Ajusto el campo y el cambio según el método de pago elegido.
+        metodo = self.metodo_pago.get()
+        if not hasattr(self, "entry_recibido"):
+            return
+        if metodo == "Efectivo":
+            self.lbl_recibido.config(text="Efectivo recibido (COP)")
+            self.entry_recibido.config(state="normal")
+            self._calcular_cambio()
+        else:
+            self.lbl_recibido.config(text=f"Pago por {metodo}")
+            self.entry_recibido.config(state="normal")
+            self.entry_recibido.delete(0, tk.END)
+            self.entry_recibido.insert(0, f"{self.total_pagar:.0f}")
+            self.entry_recibido.config(state="readonly")
+            self.lbl_cambio.config(text=formato_pesos(0))
+            self.lbl_estado_pago.config(text="Pago completo; listo para procesar")
+
+    def _calcular_cambio(self, _event=None):
+        # Calculo la devolución solo cuando el pago se hace en efectivo.
+        if not hasattr(self, "lbl_cambio"):
+            return
+        if self.metodo_pago.get() != "Efectivo":
+            return
+        recibido = self._monto_recibido()
+        if recibido is None:
+            self.lbl_cambio.config(text=formato_pesos(0))
+            self.lbl_estado_pago.config(
+                text="Ingresa el efectivo recibido para continuar",
+                fg=TEXTO_SUAVE,
+            )
+        elif recibido >= self.total_pagar:
+            self.lbl_cambio.config(
+                text=formato_pesos(recibido - self.total_pagar), fg=ACENTO
+            )
+            self.lbl_estado_pago.config(
+                text="Efectivo suficiente; listo para procesar",
+                fg=ACENTO,
+            )
+        else:
+            self.lbl_cambio.config(text="Falta dinero", fg=ROJO)
+            self.lbl_estado_pago.config(
+                text="El efectivo recibido no cubre el total", fg=ROJO
+            )
 
     def procesar_venta(self):
+        # Reviso el carrito y el pago antes de registrar la venta.
         if not self.carrito:
-            messagebox.showwarning("Carrito vacío", "Agregue al menos un producto antes de procesar la venta.")
+            messagebox.showwarning(
+                "Carrito vacío",
+                "Agrega al menos un producto antes de procesar la venta.",
+                parent=self.winfo_toplevel(),
+            )
             return
 
-        messagebox.showinfo("¡Venta Registrada!", f"Venta procesada con éxito por un total de: $ {self.total_pagar:,.0f}")
+        metodo = self.metodo_pago.get()
+        recibido = self._monto_recibido()
+        if metodo == "Efectivo" and (
+            recibido is None or recibido < self.total_pagar
+        ):
+            messagebox.showwarning(
+                "Pago incompleto",
+                "Verifica el efectivo recibido antes de continuar.",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
+        efectivo = self.total_pagar if metodo == "Efectivo" else 0
+        qr = self.total_pagar if metodo == "QR" else 0
+        bold = self.total_pagar if metodo == "Bold" else 0
+        try:
+            venta_id, total = self.modelo.registrar_venta(
+                list(self.carrito.values()),
+                efectivo,
+                qr,
+                bold,
+                self.usuario_actual.get("id"),
+            )
+        except (ValueError, OSError) as error:
+            messagebox.showerror(
+                "No se pudo procesar la venta",
+                str(error),
+                parent=self.winfo_toplevel(),
+            )
+            self._actualizar_sugerencias()
+            return
+        except Exception as error:
+            messagebox.showerror(
+                "Error al guardar la venta",
+                f"No se guardó la venta. Detalle: {error}",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
+        messagebox.showinfo(
+            "Venta registrada",
+            f"Venta #{venta_id:05d} guardada correctamente.\n"
+            f"Total: {formato_pesos(total)}",
+            parent=self.winfo_toplevel(),
+        )
         self.carrito.clear()
+        self.entry_recibido.config(state="normal")
         self.entry_recibido.delete(0, tk.END)
-        self.actualizar_tabla_y_totales()
+        self._actualizar_carrito()
+        if self.al_guardar:
+            self.al_guardar()
+
+    def _atajo_procesar(self, _event=None):
+        # Uso F12 como atajo para procesar la venta actual.
+        self.procesar_venta()
+        return "break"

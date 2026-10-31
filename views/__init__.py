@@ -1,0 +1,1 @@
+# Este paquete contiene las pantallas y los recursos visuales del sistema.

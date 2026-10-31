@@ -1,16 +1,20 @@
 import sqlite3
 import os
 
-def inicializar_base_datos():
-    # Conxion base de datos
-    ruta_base_datos = os.path.join(os.path.dirname(__file__), "pos_kontrol.db")
+
+def inicializar_base_datos(ruta_base_datos=None):
+    # Creo la base en esta carpeta, a menos que me pasen otra ruta.
+    if ruta_base_datos is None:
+        ruta_base_datos = os.path.join(
+            os.path.dirname(__file__), "pos_kontrol.db"
+        )
     conexion = sqlite3.connect(ruta_base_datos)
     cursor = conexion.cursor()
 
     # Habilitar claves foráneas en SQLite
     cursor.execute("PRAGMA foreign_keys = ON;")
 
-    # Tabla USUARIOS
+    # Dejo listas las tablas que usa el sistema.
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS usuarios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,7 +25,6 @@ def inicializar_base_datos():
         )
     ''')
 
-    # Tabla CATEGORIAS
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS categorias (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,7 +32,6 @@ def inicializar_base_datos():
         )
     ''')
 
-    # Tabla PRODUCTOS
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS productos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,7 +46,15 @@ def inicializar_base_datos():
         )
     ''')
 
-    # Tabla VENTAS
+    # Estas categorías iniciales se agregan solo si todavía no existen.
+    for categoria_id, nombre in enumerate(
+        ("Fundas", "Cables", "Cargadores", "Audio"), start=1
+    ):
+        cursor.execute(
+            "INSERT OR IGNORE INTO categorias (id, nombre) VALUES (?, ?)",
+            (categoria_id, nombre),
+        )
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS ventas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,7 +69,6 @@ def inicializar_base_datos():
         )
     ''')
 
-    # Tabla DETALLE_VENTAS
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS detalle_ventas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,7 +82,6 @@ def inicializar_base_datos():
         )
     ''')
 
-    # Tabla EGRESOS_CAJA_MENOR
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS egresos_caja_menor (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,7 +94,6 @@ def inicializar_base_datos():
         )
     ''')
 
-    # Tabla CIERRES_CAJA
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS cierres_caja (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,14 +109,44 @@ def inicializar_base_datos():
             monto_bold_total REAL NOT NULL,
             efectivo_real_contado REAL NOT NULL,
             diferencia REAL NOT NULL,
+            saldo_inicial_costos REAL,
+            saldo_inicial_ganancias REAL,
+            efectivo_esperado_costos REAL,
+            efectivo_esperado_ganancias REAL,
+            efectivo_contado_costos REAL,
+            efectivo_contado_ganancias REAL,
+            diferencia_costos REAL,
+            diferencia_ganancias REAL,
             usuario_id INTEGER,
             FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
         )
     ''')
 
+    # Si la tabla ya existía, agrego las columnas nuevas sin borrar sus datos.
+    columnas_cierres = {
+        fila[1]
+        for fila in cursor.execute("PRAGMA table_info(cierres_caja)").fetchall()
+    }
+    columnas_nuevas = {
+        "saldo_inicial_costos": "REAL",
+        "saldo_inicial_ganancias": "REAL",
+        "efectivo_esperado_costos": "REAL",
+        "efectivo_esperado_ganancias": "REAL",
+        "efectivo_contado_costos": "REAL",
+        "efectivo_contado_ganancias": "REAL",
+        "diferencia_costos": "REAL",
+        "diferencia_ganancias": "REAL",
+    }
+    for nombre, tipo in columnas_nuevas.items():
+        if nombre not in columnas_cierres:
+            cursor.execute(
+                f"ALTER TABLE cierres_caja ADD COLUMN {nombre} {tipo}"
+            )
+
     conexion.commit()
     conexion.close()
     print("¡Base de datos inicializada con éxito!")
+
 
 if __name__ == "__main__":
     inicializar_base_datos()

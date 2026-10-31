@@ -4,9 +4,16 @@ from models.modelo_usuario import ModeloUsuario
 
 class VentanaLogin:
     def __init__(self, root):
+        # Dejo la ventana centrada y preparo el modelo antes de pedir el acceso.
         self.root = root
         self.root.title("POS-Kontrol - Iniciar Sesión")
         self.root.geometry("450x520")
+        self.root.update_idletasks()
+        ancho_pantalla = self.root.winfo_screenwidth()
+        alto_pantalla = self.root.winfo_screenheight()
+        x = (ancho_pantalla - 450) // 2
+        y = (alto_pantalla - 520) // 2
+        self.root.geometry(f"450x520+{x}+{y}")
         self.root.configure(bg="#0B0F12")  # Fondo oscuro elegante del prototipo
         self.root.resizable(False, False)
 
@@ -16,6 +23,7 @@ class VentanaLogin:
         self.crear_widgets()
 
     def crear_widgets(self):
+        # Armo el formulario de inicio de sesión.
         # Título del Sistema
         titulo = tk.Label(self.root, text="POS-Kontrol", font=("Arial", 24, "bold"), fg="#00E599", bg="#0B0F12")
         titulo.pack(pady=(40, 5))
@@ -56,12 +64,19 @@ class VentanaLogin:
             cursor="hand2", command=self.validar_ingreso
         )
         btn_ingresar.pack(fill="x", ipady=12, pady=(10, 10))
+        self.root.bind("<Return>", self._ingresar_con_enter)
 
         # Pie de página
         footer = tk.Label(self.root, text="SENA - Proyecto de Titulación ADSO", font=("Arial", 8), fg="#4F5D73", bg="#0B0F12")
         footer.pack(pady=10)
 
+    def _ingresar_con_enter(self, _event=None):
+        # Permito enviar el formulario con la tecla Enter.
+        self.validar_ingreso()
+        return "break"
+
     def validar_ingreso(self):
+        # Reviso que los campos estén completos antes de consultar el modelo.
         usuario = self.entry_user.get().strip()
         password = self.entry_pass.get().strip()
 
